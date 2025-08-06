@@ -1,0 +1,13 @@
+[project]
+name = "hackmd-2025"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.40.1",
+    "kaggle>=1.7.4.5",
+    "pandas>=2.3.1",
+    "pendulum>=3.1.0",
+    "pyarrow>=21.0.0",
+]
