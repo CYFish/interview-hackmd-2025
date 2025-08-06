@@ -1,6 +1,7 @@
 import json
+import logging
+
 from typing import List, Dict, Any
-from pathlib import Path
 
 import boto3
 import pandas as pd
@@ -8,6 +9,8 @@ import pendulum
 import pyarrow.parquet as pq
 import pyarrow as pa
 
+
+logging.basicConfig(level=logging.INFO)
 
 class ArxivProcessor:
     """
@@ -17,7 +20,7 @@ class ArxivProcessor:
     cleans the data, and converts it to Parquet format for efficient storage.
     """
 
-    def __init__(self, input_path: str, output_path: str, chunk_size: int = 10000):
+    def __init__(self, input_prefix: str, output_prefix: str, chunk_size: int = 10000):
         """
         Initialize the ArXiv processor.
 
@@ -26,13 +29,13 @@ class ArxivProcessor:
             output_path: Path for the output Parquet file
             chunk_size: Number of records to process in each batch
         """
-        self.s3 = boto3.client("s3", region_name="ap-southeast-1")
+        self.s3 = boto3.client("s3", region_name="ap-northeast-1")
         self.bucket = "hackmd-project-2025"
-        self.input_path = Path(input_path)
-        self.output_path = Path(output_path)
+        self.input_path = input_prefix
+        self.output_path = output_prefix
         self.chunk_size = chunk_size
         self.buffers = {}
-        self.partition_counters = {}
+        self.counters = {}
         self.is_first_batch = True
         self.schema = pa.schema([
             ("title", pa.string()),
@@ -71,42 +74,48 @@ class ArxivProcessor:
         Reads the JSON file line by line, processes each record,
         and saves batches as Parquet files.
         """
-        self.buffers = {}
-        self.partition_counters = {}
         total_processed = 0
 
-        print(f"Starting to process {self.input_path}")
+        logging.info(f"Starting to process s3://{self.bucket}/{self.input_path}")
+        file_object = self.s3.get_object(Bucket=self.bucket, Key=self.input_path)
+        raw_lines = file_object["Body"].iter_lines()
+        for i, line in enumerate(raw_lines):
+            if not line.strip():
+                continue
 
-        with self.input_path.open("r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                try:
-                    record = json.loads(line)
-                    cleaned = self.clean_data(record)
-                    submitted_date = cleaned["submitted_time"]
-                    partition_key = f"year={submitted_date.year}/month={submitted_date.month:02}/day={submitted_date.day:02}"
+            try:
+                record = json.loads(line)
+                cleaned = self.clean_data(record)
 
-                    if partition_key not in self.buffers:
-                        self.buffers[partition_key] = []
-                    self.buffers[partition_key].append(cleaned)
+                submitted_time = cleaned["submitted_time"]
+                partition_key = f"year={submitted_time.year}/month={submitted_time.month:02}/day={submitted_time.day:02}"
 
-                    if len(self.buffers[partition_key]) >= self.chunk_size:
-                        self._write_parquet(partition_key, self.buffers[partition_key])
-                        total_processed += len(self.buffers[partition_key])
-                        print(f"Processed {i + 1} records so far")
-                        self.buffers.pop(partition_key)
+                if partition_key not in self.buffers:
+                    self.buffers[partition_key] = []
+                    self.counters[partition_key] = 0
 
-                except json.JSONDecodeError as e:
-                    print(f"Error parsing JSON at line {i + 1}: {e}")
-                    continue
+                self.buffers[partition_key].append(cleaned)
 
-                if i == 10:
-                    break
+                if len(self.buffers[partition_key]) >= self.chunk_size:
+                    self._write_parquet(partition_key, self.buffers[partition_key])
+                    total_processed += len(self.buffers[partition_key])
+                    logging.info(f"Processed {i + 1} records so far")
+                    self.buffers[partition_key] = []
 
-            # Process the remaining batch
-            for partition_key, cleaned_records in list(self.buffers.items()):
+            except json.JSONDecodeError as e:
+                logging.error(f"Error parsing JSON at line {i + 1}: {e}")
+                continue
+
+            if i == 9:
+                break
+
+        # Process the remaining batch
+        for partition_key, cleaned_records in list(self.buffers.items()):
+            if cleaned_records:
                 self._write_parquet(partition_key, cleaned_records)
+                total_processed += len(self.buffers[partition_key])
 
-        print(f"Processing complete. Total records processed: {total_processed}")
+        logging.info(f"Processing complete. Total records processed: {total_processed}")
 
     def _write_parquet(self, partition_key: str, batch: List[Dict[str, Any]]) -> None:
         """
@@ -118,35 +127,24 @@ class ArxivProcessor:
         """
         df = pd.DataFrame(batch)
 
-        if partition_key not in self.partition_counters:
-            self.partition_counters[partition_key] = 1
+        if partition_key not in self.counters:
+            self.counters[partition_key] = 1
         else:
-            self.partition_counters[partition_key] += 1
-
-        # Show sample data for the first batch
-        if self.is_first_batch:
-            print("\n=== Sample data from first batch ===")
-            sample_data = df[["submitted_time", "published_time", "version_count"]]
-            print(sample_data.head())
-            print(f"Columns: {list(sample_data.columns)}")
-            print("=" * 50)
-
-            self.is_first_batch = False
+            self.counters[partition_key] += 1
 
         table = pa.Table.from_pandas(df, schema=self.schema)
 
-        partition_path = self.output_path / partition_key
-        partition_path.mkdir(parents=True, exist_ok=True)
-        part_file = partition_path / f"part_{self.partition_counters[partition_key]:04}.parquet"
-        pq.write_table(table, part_file)
-        print(f"✓ Wrote {part_file}")
+        # part_file = f"s3://{self.bucket}/{self.output_path}{partition_key}/part_{self.counters[partition_key]:04}.parquet"
+        partition_path = f"s3://{self.bucket}/{self.output_path}{partition_key}"
+        pq.write_to_dataset(table, partition_path)
+        logging.info(f"✓ Wrote {partition_path}")
 
 
 def main():
     """Main function to run the ArXiv processor."""
     processor = ArxivProcessor(
-        input_path="data/arxiv-metadata-oai-snapshot.json",
-        output_path="data/processed/",
+        input_prefix="raw/initial/arxiv-metadata-oai-snapshot.json",
+        output_prefix="processed/",
         chunk_size=2,
     )
     processor.process()
