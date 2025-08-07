@@ -12,6 +12,7 @@ import pyarrow as pa
 
 logging.basicConfig(level=logging.INFO)
 
+
 class ArxivProcessor:
     """
     A processor for ArXiv metadata JSON files.
@@ -38,8 +39,8 @@ class ArxivProcessor:
         self.counters = {}
         self.is_first_batch = True
         self.schema = pa.schema([
+            ("id", pa.string()),
             ("title", pa.string()),
-            ("abstract", pa.string()),
             ("categories", pa.string()),
             ("doi", pa.string()),
             ("submitted_time", pa.timestamp("ns")),
@@ -58,8 +59,8 @@ class ArxivProcessor:
             Cleaned record with standardized fields
         """
         return {
-            "title": record.get("title", "").strip(),
-            "abstract": record.get("abstract", "").strip(),
+            "id": record["id"].strip(),
+            "title": record["title"].strip(),
             "categories": record.get("categories", ""),
             "doi": record.get("doi", ""),
             "submitted_time": pendulum.from_format(record.get("versions", [{}])[0].get("created", None), "ddd, D MMM YYYY HH:mm:ss z"),
@@ -102,8 +103,8 @@ class ArxivProcessor:
                     logging.info(f"Processed {i + 1} records so far")
                     self.buffers[partition_key] = []
 
-            except json.JSONDecodeError as e:
-                logging.error(f"Error parsing JSON at line {i + 1}: {e}")
+            except Exception as e:
+                logging.warn(f"Error parsing JSON at line {i + 1}: {e}")
                 continue
 
         # Process the remaining batch
@@ -136,15 +137,18 @@ class ArxivProcessor:
         logging.info(f"✓ Wrote {partition_path}")
 
 
-def main():
-    """Main function to run the ArXiv processor."""
+def main(input_prefix: str, output_prefix: str, chunk_size: int = 20000):
     processor = ArxivProcessor(
-        input_prefix="raw/initial/arxiv-metadata-oai-snapshot.json",
-        output_prefix="processed/",
-        chunk_size=20000,
+        input_prefix=input_prefix,
+        output_prefix=output_prefix,
+        chunk_size=chunk_size,
     )
     processor.process()
 
 
 if __name__ == "__main__":
-    main()
+    main(
+        input_prefix="raw/initial/arxiv-metadata-oai-snapshot.json",
+        output_prefix="processed/",
+        chunk_size=20000,
+    )
