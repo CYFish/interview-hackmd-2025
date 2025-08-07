@@ -6,7 +6,7 @@ RUNTIME=python3.13
 ARCHITECTURE=x86_64
 TIMEOUT=300  # 5 minutes
 ROLE=arn:aws:iam::589535354706:role/hackmd-lambda
-HANDLER=processor.main
+HANDLER=lambda_function.lambda_handler
 LAYER_NAME=process-layer
 
 echo "========================================"
@@ -51,6 +51,7 @@ if aws lambda get-function --function-name $FUNCTION_NAME>/dev/null 2>&1; then
     UPDATE_CONFIG_OUTPUT=$(aws lambda update-function-configuration \
         --function-name $FUNCTION_NAME \
         --layers $LAYER \
+        --handler $HANDLER \
         --timeout $TIMEOUT 2>&1)
     if [ $? -eq 0 ]; then
         echo "✅ Function configuration updated successfully"
