@@ -106,9 +106,6 @@ class ArxivProcessor:
                 logging.error(f"Error parsing JSON at line {i + 1}: {e}")
                 continue
 
-            if i == 9:
-                break
-
         # Process the remaining batch
         for partition_key, cleaned_records in list(self.buffers.items()):
             if cleaned_records:
@@ -134,7 +131,6 @@ class ArxivProcessor:
 
         table = pa.Table.from_pandas(df, schema=self.schema)
 
-        # part_file = f"s3://{self.bucket}/{self.output_path}{partition_key}/part_{self.counters[partition_key]:04}.parquet"
         partition_path = f"s3://{self.bucket}/{self.output_path}{partition_key}"
         pq.write_to_dataset(table, partition_path)
         logging.info(f"✓ Wrote {partition_path}")
@@ -145,7 +141,7 @@ def main():
     processor = ArxivProcessor(
         input_prefix="raw/initial/arxiv-metadata-oai-snapshot.json",
         output_prefix="processed/",
-        chunk_size=2,
+        chunk_size=20000,
     )
     processor.process()
 

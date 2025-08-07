@@ -6,10 +6,14 @@ from processor import ArxivProcessor
 
 def lambda_handler(event, context):
     """AWS Lambda handler function"""
+    logging.info(f"Received event for {event}")
+    input_prefix = event.get("input_prefix", None)
+    output_prefix = event.get("output_prefix", None)
+
     try:
         processor = ArxivProcessor(
-            input_prefix="raw/initial/arxiv-metadata-oai-snapshot.json",
-            output_prefix="processed/",
+            input_prefix="raw/initial/arxiv-metadata-oai-snapshot.json" if input_prefix is None else input_prefix,
+            output_prefix="processed/" if output_prefix is None else output_prefix,
             chunk_size=2,
         )
         processor.process()
