@@ -16,4 +16,5 @@ aws = [
 ]
 collect = [
     "kaggle>=1.7.4.5",
+    "sickle>=0.7.0",
 ]
