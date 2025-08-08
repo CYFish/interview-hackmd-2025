@@ -503,9 +503,9 @@ class ArxivProcessor:
             else:
                 logger.info(f"Reading from S3: s3://{self.bucket}/{file_path}")
                 file_object = self.s3.get_object(Bucket=self.bucket, Key=file_path)
-            raw_lines = file_object["Body"].iter_lines()
+                raw_lines = file_object["Body"].iter_lines()
 
-                # Process each line
+            # Process each line
             for i, line in enumerate(raw_lines):
                 if not line or (isinstance(line, bytes) and not line.strip()) or (isinstance(line, str) and not line.strip()):
                     continue
@@ -517,42 +517,42 @@ class ArxivProcessor:
                     else:
                         record = json.loads(line)
 
-                        # Clean data
-                        cleaned = self.clean_data(record, format_type)
+                    # Clean data
+                    cleaned = self.clean_data(record, format_type)
 
-                        # Skip records with critical missing data
-                        if (format_type == "arXiv" and
-                            not cleaned["title"] and
-                            not cleaned["abstract"] and
-                            not cleaned["categories"]):
-                            logger.warning(f"Skipping record {cleaned['id']} with insufficient data")
-                            self.stats["failed_records"] += 1
-                            continue
+                    # Skip records with critical missing data
+                    if (format_type == "arXiv" and
+                        not cleaned["title"] and
+                        not cleaned["abstract"] and
+                        not cleaned["categories"]):
+                        logger.warning(f"Skipping record {cleaned['id']} with insufficient data")
+                        self.stats["failed_records"] += 1
+                        continue
 
-                        # Determine partition key based on submission date
-                        submitted_date = cleaned["submitted_date"]
-                        if submitted_date:
-                            partition_key = f"year={submitted_date.year}/month={submitted_date.month:02}/day={submitted_date.day:02}"
-                        else:
-                            # Fallback to current date if no submission date
-                            today = pendulum.now().date()
-                            partition_key = f"year={today.year}/month={today.month:02}/day={today.day:02}"
+                    # Determine partition key based on submission date
+                    submitted_date = cleaned["submitted_date"]
+                    if submitted_date:
+                        partition_key = f"year={submitted_date.year}/month={submitted_date.month:02}/day={submitted_date.day:02}"
+                    else:
+                        # Fallback to current date if no submission date
+                        today = pendulum.now().date()
+                        partition_key = f"year={today.year}/month={today.month:02}/day={today.day:02}"
 
-                        # Add to buffer
-                        if partition_key not in self.buffers:
-                            self.buffers[partition_key] = []
-                            self.counters[partition_key] = 0
+                    # Add to buffer
+                    if partition_key not in self.buffers:
+                        self.buffers[partition_key] = []
+                        self.counters[partition_key] = 0
 
-                            self.buffers[partition_key].append(cleaned)
-                            self.stats["total_records"] += 1
-                            self.stats["successful_records"] += 1
-                            processed_count += 1
+                    self.buffers[partition_key].append(cleaned)
+                    self.stats["total_records"] += 1
+                    self.stats["successful_records"] += 1
+                    processed_count += 1
 
-                        # Write batch when buffer is full
-                        if len(self.buffers[partition_key]) >= self.chunk_size:
-                            self._write_parquet(partition_key, self.buffers[partition_key])
-                            logger.info(f"Processed {processed_count} records from {file_path}")
-                            self.buffers[partition_key] = []
+                    # Write batch when buffer is full
+                    if len(self.buffers[partition_key]) >= self.chunk_size:
+                        self._write_parquet(partition_key, self.buffers[partition_key])
+                        logger.info(f"Processed {processed_count} records from {file_path}")
+                        self.buffers[partition_key] = []
 
                 except Exception as e:
                     logger.error(f"Error processing record at line {i + 1} in {file_path}: {e}")
@@ -591,36 +591,36 @@ class ArxivProcessor:
             else:
                 self.counters[partition_key] += 1
 
-                # Convert to PyArrow Table - use schema inference instead of fixed schema
-                # to handle potential missing columns
-                table = pa.Table.from_pandas(df)
+            # Convert to PyArrow Table - use schema inference instead of fixed schema
+            # to handle potential missing columns
+            table = pa.Table.from_pandas(df)
 
-                if self.local_mode:
-                    # Write to local file system
-                    partition_dir = os.path.join(self.output_path, partition_key)
-                    os.makedirs(partition_dir, exist_ok=True)
-                    file_name = f"part-{self.counters[partition_key]:05d}.parquet"
-                    file_path = os.path.join(partition_dir, file_name)
-                    pq.write_table(table, file_path)
-                    logger.info(f"✓ Wrote {len(batch)} records to {file_path}")
-                else:
-                    # Write to S3
-                    partition_path = f"{self.output_path}/{partition_key}"
-                    file_name = f"part-{self.counters[partition_key]:05d}.parquet"
-                    object_key = f"{partition_path}/{file_name}"
+            if self.local_mode:
+                # Write to local file system
+                partition_dir = os.path.join(self.output_path, partition_key)
+                os.makedirs(partition_dir, exist_ok=True)
+                file_name = f"part-{self.counters[partition_key]:05d}.parquet"
+                file_path = os.path.join(partition_dir, file_name)
+                pq.write_table(table, file_path)
+                logger.info(f"✓ Wrote {len(batch)} records to {file_path}")
+            else:
+                # Write to S3
+                partition_path = f"{self.output_path}/{partition_key}"
+                file_name = f"part-{self.counters[partition_key]:05d}.parquet"
+                object_key = f"{partition_path}/{file_name}"
 
-                    # Write to buffer and then to S3
-                    with pa.BufferOutputStream() as stream:
-                        pq.write_table(table, stream)
-                        data = stream.getvalue()
+                # Write to buffer and then to S3
+                with pa.BufferOutputStream() as stream:
+                    pq.write_table(table, stream)
+                    data = stream.getvalue()
 
-                        self.s3.put_object(
-                            Bucket=self.bucket,
-                            Key=object_key,
-                            Body=data.to_pybytes()
-                        )
+                    self.s3.put_object(
+                        Bucket=self.bucket,
+                        Key=object_key,
+                        Body=data.to_pybytes()
+                    )
 
-                    logger.info(f"✓ Wrote {len(batch)} records to s3://{self.bucket}/{object_key}")
+                logger.info(f"✓ Wrote {len(batch)} records to s3://{self.bucket}/{object_key}")
 
         except Exception as e:
             logger.error(f"Error writing Parquet file: {e}")
