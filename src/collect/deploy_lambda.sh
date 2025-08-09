@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # AWS Lambda deployment script for ArXiv Collector
-FUNCTION_NAME=hackmd-collector
+FUNCTION_NAME=arxiv-collector
 RUNTIME=python3.13
 ARCHITECTURE=x86_64
 TIMEOUT=900  # 15 minutes
