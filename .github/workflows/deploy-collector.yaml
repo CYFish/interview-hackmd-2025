@@ -2,9 +2,21 @@ name: Deploy Collector
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_collector:
+        description: 'Deploy Collector Lambda'
+        type: boolean
+        default: true
+        required: true
+      deploy_collector_schedule:
+        description: 'Deploy Collector EventBridge schedule'
+        type: boolean
+        default: true
+        required: true
 
 jobs:
   deploy-collector:
+    if: ${{ github.event.inputs.deploy_collector == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -22,6 +34,7 @@ jobs:
         run: bash src/collect/deploy_lambda.sh
 
   deploy-collector-schedule:
+    if: ${{ github.event.inputs.deploy_collector == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
