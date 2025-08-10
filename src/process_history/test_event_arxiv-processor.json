@@ -1,4 +1,5 @@
 {
+    "--bucket": "hackmd-project-2025",
     "--input_path": "raw/initial/arxiv-metadata-oai-snapshot.json",
     "--output_path": "processed/",
     "--database_name": "arxiv_history",
