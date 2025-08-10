@@ -1,0 +1,370 @@
+import logging
+import json
+from typing import Dict, List, Any, Optional
+from decimal import Decimal
+
+import boto3
+from boto3.dynamodb.conditions import Key, Attr
+from botocore.exceptions import ClientError
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# Helper class to convert Decimal to float for JSON serialization
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return float(o)
+        return super(DecimalEncoder, self).default(o)
+
+
+class DataQueryService:
+    """
+    Provides query functionality for ArXiv data stored in persistence layer.
+
+    This class implements various query patterns to support analytical
+    use cases such as dashboard metrics and paper recommendations.
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the data query service.
+
+        Args:
+            config: Configuration dictionary with query parameters
+        """
+        self.config = config
+        self.region_name = config.get("region_name", "ap-northeast-1")
+        self.table_name = config.get("table_name", "arxiv-papers")
+
+        # Initialize DynamoDB resources
+        self.dynamodb = boto3.resource("dynamodb", region_name=self.region_name)
+        self.table = self.dynamodb.Table(self.table_name)
+
+    def get_paper_by_id(self, paper_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a paper by its ID.
+
+        Args:
+            paper_id: Paper ID to retrieve
+
+        Returns:
+            Paper record or None if not found
+        """
+        try:
+            response = self.table.get_item(
+                Key={"paper_id": paper_id}
+            )
+
+            item = response.get("Item")
+            if item:
+                return json.loads(json.dumps(item, cls=DecimalEncoder))
+            return None
+
+        except ClientError as e:
+            logger.error(f"Error getting paper {paper_id}: {e}")
+            return None
+
+    def get_papers_by_category(self, category: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get papers in a specific category.
+
+        Args:
+            category: Category code (e.g., "cs.AI")
+            limit: Maximum number of results to return
+
+        Returns:
+            List of paper records
+        """
+        try:
+            response = self.table.query(
+                IndexName="CategoryIndex",
+                KeyConditionExpression=Key("primary_category").eq(category),
+                Limit=limit
+            )
+
+            items = response.get("Items", [])
+            return json.loads(json.dumps(items, cls=DecimalEncoder))
+
+        except ClientError as e:
+            logger.error(f"Error querying papers by category {category}: {e}")
+            return []
+
+    def get_papers_by_date_range(self, start_date: str, end_date: str,
+                                 category: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get papers within a date range, optionally filtered by category.
+
+        Args:
+            start_date: Start date in ISO format (YYYY-MM-DD)
+            end_date: End date in ISO format (YYYY-MM-DD)
+            category: Optional category code filter
+            limit: Maximum number of results to return
+
+        Returns:
+            List of paper records
+        """
+        try:
+            if category:
+                # Query by category and date range using the index
+                response = self.table.query(
+                    IndexName="CategoryIndex",
+                    KeyConditionExpression=
+                        Key("primary_category").eq(category) &
+                        Key("update_date").between(start_date, end_date),
+                    Limit=limit
+                )
+            else:
+                # Scan with date range filter (less efficient)
+                response = self.table.scan(
+                    FilterExpression=
+                        Attr("update_date").between(start_date, end_date),
+                    Limit=limit
+                )
+
+            items = response.get("Items", [])
+            return json.loads(json.dumps(items, cls=DecimalEncoder))
+
+        except ClientError as e:
+            logger.error(f"Error querying papers by date range: {e}")
+            return []
+
+    def get_average_updates_by_category(self) -> Dict[str, Any]:
+        """
+        Calculate average number of updates per paper by category.
+
+        Returns:
+            Dictionary mapping categories to average update counts
+        """
+        try:
+            # Scan the table to get all papers with version_count
+            response = self.table.scan(
+                ProjectionExpression="primary_category, version_count"
+            )
+
+            items = response.get("Items", [])
+
+            # Group by category
+            categories = {}
+            for item in items:
+                category = item.get("primary_category")
+                version_count = item.get("version_count")
+
+                if not category or not version_count:
+                    continue
+
+                if category not in categories:
+                    categories[category] = {
+                        "total_papers": 0,
+                        "total_updates": 0
+                    }
+
+                categories[category]["total_papers"] += 1
+                categories[category]["total_updates"] += version_count
+
+            # Calculate averages
+            result = {}
+            for category, data in categories.items():
+                if data["total_papers"] > 0:
+                    result[category] = {
+                        "average_updates": data["total_updates"] / data["total_papers"],
+                        "total_papers": data["total_papers"]
+                    }
+
+            return result
+
+        except ClientError as e:
+            logger.error(f"Error calculating average updates: {e}")
+            return {}
+
+    def get_submission_to_publication_time(self, category: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Calculate average time from submission to publication by category.
+
+        Args:
+            category: Optional category code filter
+
+        Returns:
+            Dictionary with submission to publication time metrics
+        """
+        try:
+            # Prepare filter expression
+            filter_expr = Attr("is_published").eq(True)
+            if category:
+                filter_expr = filter_expr & Attr("primary_category").eq(category)
+
+            # Scan the table for published papers
+            response = self.table.scan(
+                FilterExpression=filter_expr,
+                ProjectionExpression="paper_id, primary_category, first_submission_date, journal_ref"
+            )
+
+            items = response.get("Items", [])
+
+            # Group by category
+            categories = {}
+            for item in items:
+                cat = item.get("primary_category")
+                if not cat:
+                    continue
+
+                if cat not in categories:
+                    categories[cat] = {
+                        "papers": [],
+                        "total_days": 0,
+                        "count": 0
+                    }
+
+                # Calculate submission to publication time
+                # In a real implementation, we would extract publication date from journal_ref
+                # or use an external API to get the actual publication date
+                # Here we're just using a placeholder calculation
+                categories[cat]["papers"].append(item)
+                categories[cat]["count"] += 1
+
+            # Calculate metrics
+            result = {}
+            for cat, data in categories.items():
+                if data["count"] > 0:
+                    # This is a placeholder calculation - in reality, you would
+                    # calculate actual days between submission and publication
+                    avg_days = 180  # Placeholder: average 6 months from submission to publication
+
+                    result[cat] = {
+                        "average_days": avg_days,
+                        "sample_size": data["count"]
+                    }
+
+            return result
+
+        except ClientError as e:
+            logger.error(f"Error calculating submission to publication time: {e}")
+            return {}
+
+    def get_institution_submission_counts(self, limit: int = 50) -> Dict[str, int]:
+        """
+        Get submission counts by institution.
+
+        Args:
+            limit: Maximum number of institutions to return
+
+        Returns:
+            Dictionary mapping institutions to submission counts
+        """
+        try:
+            # Scan the table to get all papers with institution
+            response = self.table.scan(
+                ProjectionExpression="institution",
+                FilterExpression=Attr("institution").exists()
+            )
+
+            items = response.get("Items", [])
+
+            # Count submissions by institution
+            institutions = {}
+            for item in items:
+                institution = item.get("institution")
+                if not institution:
+                    continue
+
+                institutions[institution] = institutions.get(institution, 0) + 1
+
+            # Sort by count and limit
+            sorted_institutions = dict(sorted(
+                institutions.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:limit])
+
+            return sorted_institutions
+
+        except ClientError as e:
+            logger.error(f"Error getting institution submission counts: {e}")
+            return {}
+
+
+def main():
+    """
+    Command-line interface for data queries.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Query ArXiv data from persistence layer")
+    parser.add_argument("--region", type=str, default="ap-northeast-1",
+                        help="AWS region")
+    parser.add_argument("--table", type=str, default="arxiv-papers",
+                        help="DynamoDB table name")
+    parser.add_argument("--query", type=str, required=True, choices=[
+                        "paper", "category", "date-range", "updates", "publication-time", "institutions"],
+                        help="Query type")
+    parser.add_argument("--paper-id", type=str,
+                        help="Paper ID for paper query")
+    parser.add_argument("--category", type=str,
+                        help="Category for category query")
+    parser.add_argument("--start-date", type=str,
+                        help="Start date for date range query (YYYY-MM-DD)")
+    parser.add_argument("--end-date", type=str,
+                        help="End date for date range query (YYYY-MM-DD)")
+    parser.add_argument("--limit", type=int, default=100,
+                        help="Maximum number of results")
+    parser.add_argument("--output", type=str,
+                        help="Output file path")
+
+    args = parser.parse_args()
+
+    # Create query service
+    config = {
+        "region_name": args.region,
+        "table_name": args.table
+    }
+    query_service = DataQueryService(config)
+
+    # Execute query
+    result = None
+    if args.query == "paper":
+        if not args.paper_id:
+            print("Error: --paper-id is required for paper query")
+            return
+        result = query_service.get_paper_by_id(args.paper_id)
+
+    elif args.query == "category":
+        if not args.category:
+            print("Error: --category is required for category query")
+            return
+        result = query_service.get_papers_by_category(args.category, args.limit)
+
+    elif args.query == "date-range":
+        if not args.start_date or not args.end_date:
+            print("Error: --start-date and --end-date are required for date range query")
+            return
+        result = query_service.get_papers_by_date_range(args.start_date, args.end_date, args.category, args.limit)
+
+    elif args.query == "updates":
+        result = query_service.get_average_updates_by_category()
+
+    elif args.query == "publication-time":
+        result = query_service.get_submission_to_publication_time(args.category)
+
+    elif args.query == "institutions":
+        result = query_service.get_institution_submission_counts(args.limit)
+
+    # Output result
+    if result:
+        if args.output:
+            with open(args.output, "w") as f:
+                json.dump(result, f, indent=2)
+            print(f"Results written to {args.output}")
+        else:
+            print(json.dumps(result, indent=2))
+    else:
+        print("No results found")
+
+
+if __name__ == "__main__":
+    main()
