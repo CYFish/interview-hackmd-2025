@@ -46,7 +46,7 @@ class MetricsCollector:
         self.cloudwatch = None
         if self.use_cloudwatch:
             try:
-                self.cloudwatch = boto3.client('cloudwatch', region_name=self.region)
+                self.cloudwatch = boto3.client("cloudwatch", region_name=self.region)
                 logger.info("CloudWatch metrics enabled")
             except Exception as e:
                 logger.error(f"Error initializing CloudWatch client: {e}")
@@ -137,19 +137,19 @@ class MetricsCollector:
                     continue
 
                 metric_data.append({
-                    'MetricName': name,
-                    'Value': float(value),
-                    'Unit': 'Seconds' if name.endswith('_duration') else 'Count',
-                    'Dimensions': [
+                    "MetricName": name,
+                    "Value": float(value),
+                    "Unit": "Seconds" if name.endswith("_duration") else "Count",
+                    "Dimensions": [
                         {
-                            'Name': 'JobName',
-                            'Value': self.job_name
+                            "Name": "JobName",
+                            "Value": self.job_name
                         },
                         {
-                            'Name': 'RunId',
-                            'Value': self.run_id
+                            "Name": "RunId",
+                            "Value": self.run_id
                         }
-                    ]
+                    ],
                 })
 
             # Split into batches of 20 (CloudWatch limit)
