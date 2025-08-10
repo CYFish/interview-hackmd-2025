@@ -1,6 +1,7 @@
 import json
 import logging
-from datetime import datetime, timedelta
+
+import pendulum
 
 from pipeline import Pipeline
 
@@ -40,9 +41,9 @@ def lambda_handler(event, context):
 
         # If dates are not provided, default to processing yesterday's data
         if not from_date or not to_date:
-            yesterday = datetime.now() - timedelta(days=1)
-            from_date = yesterday.strftime("%Y-%m-%d")
-            to_date = datetime.now().strftime("%Y-%m-%d")
+            timezone = "UTC"
+            from_date = pendulum.now(timezone).subtract(days=1).to_date_string()
+            to_date = pendulum.now(timezone).to_date_string()
 
         logger.info(f"Processing data from {from_date} to {to_date}")
 
