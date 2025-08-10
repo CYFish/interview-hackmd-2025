@@ -21,7 +21,6 @@ def lambda_handler(event, context):
         event (dict): Lambda event data, may contain:
             - from_date: Start date in ISO format (YYYY-MM-DD), inclusive
             - to_date: End date in ISO format (YYYY-MM-DD), exclusive
-            - format_type: Optional format type ("arXiv" or "arXivRaw")
             - s3_bucket: S3 bucket name for source data
             - table_name: DynamoDB table name for destination
         context: Lambda context
@@ -35,7 +34,6 @@ def lambda_handler(event, context):
         # Extract parameters from event or use defaults
         from_date = event.get("from_date")
         to_date = event.get("to_date")
-        format_type = event.get("format_type")
         s3_bucket = event.get("s3_bucket", "hackmd-project-2025")
         table_name = event.get("table_name", "arxiv-papers")
         region_name = event.get("region_name", "ap-northeast-1")
@@ -59,13 +57,9 @@ def lambda_handler(event, context):
         # Create and run pipeline
         pipeline = DataProcessingPipeline(config)
 
-        # Process data based on whether format_type is specified
-        if format_type:
-            logger.info(f"Processing {format_type} data")
-            stats = pipeline.process_format_type(format_type, from_date, to_date)
-        else:
-            logger.info("Processing all format types")
-            stats = pipeline.process_date_range(from_date, to_date)
+        # Process data
+        logger.info("Processing raw data")
+        stats = pipeline.process_date_range(from_date, to_date)
 
         # Return results
         return {
