@@ -1,0 +1,10 @@
+{
+    "--input_path": "raw/initial/arxiv-metadata-oai-snapshot.json",
+    "--output_path": "processed/",
+    "--database_name": "arxiv_history",
+    "--table_name": "processed_papers",
+    "--generate_models": "true",
+    "--write_models": "true",
+    "--use_cloudwatch": "true",
+    "--region": "ap-northeast-1"
+}
