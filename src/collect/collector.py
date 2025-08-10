@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 from typing import Dict, List, Any, Optional
 
 from sickle import Sickle
@@ -32,7 +33,7 @@ class ArxivCollector:
         local_dir: Optional[str] = None,
         use_s3: bool = False,
         bucket: str = "hackmd-project-2025",
-        batch_size: int = 100
+        batch_size: int = 10000
     ):
         """
         Initialize the ArXiv collector.
@@ -97,6 +98,10 @@ class ArxivCollector:
             Statistics about the collection process
         """
         self.stats["start_time"] = pendulum.now().to_datetime_string()
+
+        # Always delete existing data before collection to avoid duplicates
+        logger.info("Deleting existing data before collection")
+        self._delete_existing_data()
 
         sickle = Sickle("https://oaipmh.arxiv.org/oai")
 
@@ -174,6 +179,64 @@ class ArxivCollector:
         logger.info(f"Collection completed. Stats: {self.stats}")
 
         return self.stats
+
+    def _delete_existing_data(self) -> None:
+        """
+        Delete existing data for the date range before collection.
+
+        This is always done before collection to ensure data consistency and avoid duplicates.
+        For local storage: Removes files in the date directories.
+        For S3: Deletes objects with matching date prefixes.
+        """
+        for file_date in pendulum.interval(self.from_date, self.to_date.subtract(days=1)):
+            if self.use_s3:
+                # For S3, delete the objects with matching date prefixes
+                logger.info(f"Deleting existing data for {file_date.to_date_string()}")
+                arxiv_deleted_count = self._delete_existing_data_s3("arXiv", file_date)
+                arxiv_raw_deleted_count = self._delete_existing_data_s3("arXivRaw", file_date)
+                logger.info(f"Deleted {arxiv_deleted_count + arxiv_raw_deleted_count} objects from S3")
+            else:
+                # For local storage, delete the directory
+                arxiv_date_dir = os.path.join(self.local_dir, "raw", "arXiv", file_date.to_date_string())
+                arxiv_raw_date_dir = os.path.join(self.local_dir, "raw", "arXivRaw", file_date.to_date_string())
+
+                if os.path.exists(arxiv_date_dir):
+                    shutil.rmtree(arxiv_date_dir)
+                if os.path.exists(arxiv_raw_date_dir):
+                    shutil.rmtree(arxiv_raw_date_dir)
+
+                logger.info(f"Deleted existing files in {arxiv_date_dir} and {arxiv_raw_date_dir}")
+
+    def _delete_existing_data_s3(self, format: str, file_date: pendulum.DateTime) -> int:
+        """
+        Delete existing data for a specific date from S3.
+
+        Args:
+            format: The format of the data to delete (arXiv or arXivRaw)
+            file_date: The date to delete the data for
+
+        Returns:
+            The number of objects deleted
+        """
+        prefix = f"raw/{format}/{file_date.to_date_string()}/"
+        response = self.s3.list_objects_v2(
+            Bucket=self.bucket,
+            Prefix=prefix,
+        )
+
+        if "Contents" in response:
+            objects_to_delete = [{"Key": obj["Key"]} for obj in response["Contents"]]
+            self.s3.delete_objects(
+                Bucket=self.bucket,
+                Delete={
+                    "Objects": objects_to_delete,
+                    "Quiet": True,
+                },
+            )
+
+            return len(objects_to_delete)
+        else:
+            return 0
 
     def _process_record(self, record: Record, metadata_format: str) -> Dict[str, Any]:
         """
@@ -304,7 +367,7 @@ class ArxivCollector:
             # Save to local file with date-based directory structure
             try:
                 # Ensure directory exists
-                date_dir = os.path.join(self.local_dir, metadata_format, date_str)
+                date_dir = os.path.join(self.local_dir, "raw", metadata_format, date_str)
                 os.makedirs(date_dir, exist_ok=True)
 
                 file_path = os.path.join(date_dir, filename)
