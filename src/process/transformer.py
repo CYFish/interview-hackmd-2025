@@ -164,20 +164,6 @@ class ArxivMetadataTransformer:
             item["journal_ref"] = arxiv_record.get("journal_ref", "")
             item["is_published"] = bool(item["journal_ref"])
 
-            # Parse publication date if published
-            if item["is_published"] and "versions" in arxiv_raw_record:
-                try:
-                    latest_version = max(arxiv_raw_record["versions"], key=lambda x: x["created"])
-                    item["published_date"] = pendulum.from_format(
-                        latest_version["created"],
-                        "ddd, D MMM YYYY HH:mm:ss z"
-                    ).in_timezone(self.time_zone).date().isoformat()
-                except Exception as e:
-                    logger.warning(f"Error parsing publication date: {e}")
-                    item["published_date"] = None
-            else:
-                item["published_date"] = None
-
             # Process author information
             if "authors_parsed" in arxiv_record and isinstance(arxiv_record["authors_parsed"], list):
                 authors = []
@@ -208,15 +194,20 @@ class ArxivMetadataTransformer:
                 item["version_count"] = len(arxiv_raw_record["versions"])
 
                 # Parse submission date from the first version
+                version_dates = []
                 try:
-                    first_version = min(arxiv_raw_record["versions"], key=lambda x: x["created"])
-                    item["submitted_date"] = pendulum.from_format(
-                        first_version["created"],
-                        "ddd, D MMM YYYY HH:mm:ss z"
-                    ).in_timezone(self.time_zone).date().isoformat()
+                    version_dates = [
+                        pendulum.from_format(version["created"], "ddd, D MMM YYYY HH:mm:ss z").in_timezone(self.time_zone)
+                        for version in arxiv_raw_record["versions"]
+                    ]
+                    version_dates.sort()
                 except Exception as e:
                     logger.warning(f"Error parsing submission date: {e}")
                     item["submitted_date"] = None
+
+                item["submitted_date"] = version_dates[0].date().isoformat()
+
+                item["published_date"] = version_dates[-1].date().isoformat() if item["is_published"] else None
 
             # Extract update_date
             item["update_date"] = None
