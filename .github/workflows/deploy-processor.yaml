@@ -2,9 +2,21 @@ name: Deploy Processor
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_processor:
+        description: 'Deploy Processor Lambda'
+        type: boolean
+        default: true
+        required: true
+      deploy_processor_history:
+        description: 'Deploy Processor History Glue Job'
+        type: boolean
+        default: true
+        required: true
 
 jobs:
   deploy-processor:
+    if: ${{ github.event.inputs.deploy_processor == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -22,6 +34,7 @@ jobs:
         run: bash src/process/deploy_lambda.sh
 
   deploy-processor-history:
+    if: ${{ github.event.inputs.deploy_processor_history == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
