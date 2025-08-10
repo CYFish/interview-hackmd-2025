@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from collector import ArxivCollector
+from collector import Collector
 
 # Configure logging
 logging.basicConfig(
@@ -45,7 +45,7 @@ def lambda_handler(event, context):
         logger.info(f"Collecting data from {from_date} to {to_date}")
 
         # Create collector with S3 storage
-        collector = ArxivCollector(
+        collector = Collector(
             from_str=from_date,
             to_str=to_date,
             use_s3=True,

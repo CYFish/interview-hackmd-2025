@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class DataSourceExtractor:
+class Extractor:
     """
     Extracts ArXiv data from source systems.
 

@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from pipeline import DataProcessingPipeline
+from pipeline import Pipeline
 
 
 # Configure logging
@@ -55,7 +55,7 @@ def lambda_handler(event, context):
         }
 
         # Create and run pipeline
-        pipeline = DataProcessingPipeline(config)
+        pipeline = Pipeline(config)
 
         # Process data
         logger.info("Processing raw data")

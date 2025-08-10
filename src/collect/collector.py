@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class ArxivCollector:
+class Collector:
     """
     A collector for ArXiv metadata.
 
@@ -406,7 +406,7 @@ def main():
     args = parser.parse_args()
 
     # Create collector
-    collector = ArxivCollector(
+    collector = Collector(
         from_str=args.from_date,
         to_str=args.to_date,
         local_dir=args.local_dir,

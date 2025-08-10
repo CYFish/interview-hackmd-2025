@@ -1,11 +1,11 @@
 import logging
 import time
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict
 
-from extractor import DataSourceExtractor
-from transformer import ArxivMetadataTransformer
-from writer import PersistenceWriter
+from extractor import Extractor
+from transformer import Transformer
+from writer import Writer
 
 
 # Configure logging
@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class DataProcessingPipeline:
+class Pipeline:
     """
     Main pipeline orchestrator for ArXiv metadata processing.
 
@@ -34,9 +34,9 @@ class DataProcessingPipeline:
             config: Configuration dictionary containing processing parameters
         """
         self.config = config
-        self.extractor = DataSourceExtractor(config)
-        self.transformer = ArxivMetadataTransformer(config)
-        self.writer = PersistenceWriter(config)
+        self.extractor = Extractor(config)
+        self.transformer = Transformer(config)
+        self.writer = Writer(config)
 
         # Initialize statistics
         self.stats = {

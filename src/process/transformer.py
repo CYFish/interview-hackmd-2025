@@ -12,7 +12,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class ArxivMetadataTransformer:
+class Transformer:
     """
     Transforms raw ArXiv data into a structured format.
 

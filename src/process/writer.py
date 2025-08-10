@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class PersistenceWriter:
+class Writer:
     """
     Writes processed ArXiv data to persistence layer.
 
