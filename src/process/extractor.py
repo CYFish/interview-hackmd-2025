@@ -39,6 +39,17 @@ class DataSourceExtractor:
         if not self.local_mode:
             self.s3 = boto3.client("s3", region_name=self.region_name)
 
+        # Initialize statistics
+        self.stats = {
+            "total_records": 0,
+            "arxiv_records": 0,
+            "arxiv_raw_records": 0,
+            "processed_files": 0,
+            "failed_files": 0,
+            "start_time": None,
+            "end_time": None,
+        }
+
     def extract_date_range(self, from_date: str, to_date: str) -> List[Dict[str, Any]]:
         """
         Extract data for a specific date range, combining both arXiv and arXivRaw formats.
@@ -50,13 +61,25 @@ class DataSourceExtractor:
         Returns:
             List of raw records
         """
+        self.stats["start_time"] = datetime.now()
         all_records = []
 
         # Process both formats
         for format_type in ["arXiv", "arXivRaw"]:
             format_records = self.extract_format_type(format_type, from_date, to_date)
             all_records.extend(format_records)
+
+            # Update statistics
+            if format_type == "arXiv":
+                self.stats["arxiv_records"] = len(format_records)
+            else:
+                self.stats["arxiv_raw_records"] = len(format_records)
+
             logger.info(f"Extracted {len(format_records)} {format_type} records")
+
+        # Update total records
+        self.stats["total_records"] = len(all_records)
+        self.stats["end_time"] = datetime.now()
 
         logger.info(f"Total extracted records: {len(all_records)}")
         return all_records
@@ -209,27 +232,45 @@ class DataSourceExtractor:
 
             # List JSON files in the directory
             json_files = [f for f in os.listdir(dir_path) if f.endswith(".json")]
+            self.stats["processed_files"] += len(json_files)
 
             # Process each file
             for json_file in json_files:
                 file_path = os.path.join(dir_path, json_file)
 
-                # Read file content
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                try:
+                    # Read file content
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
 
-                # Parse JSON (each line is a separate JSON object)
-                for line in content.strip().split("\n"):
-                    try:
-                        record = json.loads(line)
-                        # Add format_type to the record for later processing
-                        record["_format_type"] = format_type
-                        records.append(record)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Error parsing JSON line in {file_path}: {e}")
+                    # Parse JSON (each line is a separate JSON object)
+                    for line in content.strip().split("\n"):
+                        try:
+                            record = json.loads(line)
+                            # Add format_type to the record for later processing
+                            record["_format_type"] = format_type
+                            records.append(record)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Error parsing JSON line in {file_path}: {e}")
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {e}")
+                    self.stats["failed_files"] += 1
 
         except Exception as e:
             logger.error(f"Error extracting {format_type} data from local directory for {date_str}: {e}",
                          exc_info=True)
 
         return records
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get extraction statistics.
+
+        Returns:
+            Dictionary with extraction statistics
+        """
+        if self.stats["start_time"] and self.stats["end_time"]:
+            duration = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
+            self.stats["duration_seconds"] = duration
+
+        return self.stats

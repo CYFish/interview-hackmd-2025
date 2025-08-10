@@ -73,7 +73,11 @@ class DataProcessingPipeline:
             extract_time = time.time() - start_time
             logger.info(f"Extraction completed in {extract_time:.2f} seconds")
 
-            self.stats["total_records"] = len(raw_data)
+            # Get extraction statistics
+            extract_stats = self.extractor.get_stats()
+            self.stats["total_records"] = extract_stats["total_records"]
+            self.stats["processed_files"] = extract_stats["processed_files"]
+
             if not raw_data:
                 logger.info("No data found for the specified date range")
                 self.stats["end_time"] = datetime.now().isoformat()
@@ -86,8 +90,10 @@ class DataProcessingPipeline:
             transform_time = time.time() - start_time
             logger.info(f"Transformation completed in {transform_time:.2f} seconds")
 
-            self.stats["successful_records"] = len(transformed_data)
-            self.stats["failed_records"] = self.stats["total_records"] - self.stats["successful_records"]
+            # Get transformation statistics
+            transform_stats = self.transformer.get_stats()
+            self.stats["successful_records"] = transform_stats["output_records"]
+            self.stats["failed_records"] += transform_stats["failed_records"]
 
             # Step 3: Write to persistence layer
             logger.info("Writing data to persistence layer")
@@ -96,9 +102,12 @@ class DataProcessingPipeline:
             write_time = time.time() - start_time
             logger.info(f"Write operation completed in {write_time:.2f} seconds")
 
+            # Get write statistics
+            write_stats = self.writer.get_stats()
+
             # Update statistics from write operation
-            self.stats["updated_records"] = write_result.get("updated_records", 0)
-            self.stats["new_records"] = write_result.get("new_records", 0)
+            self.stats["updated_records"] = write_stats["updated_records"]
+            self.stats["new_records"] = write_stats["new_records"]
 
             logger.info(f"Pipeline completed successfully. Processed {self.stats['successful_records']} records.")
 

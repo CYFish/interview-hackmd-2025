@@ -1,6 +1,7 @@
 import logging
 import time
 import concurrent.futures
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 from decimal import Decimal
 
@@ -44,6 +45,17 @@ class PersistenceWriter:
         self.dynamodb = boto3.resource("dynamodb", region_name=self.region_name)
         self.table = self.dynamodb.Table(self.table_name)
 
+        # Initialize statistics
+        self.stats = {
+            "total_records": 0,
+            "new_records": 0,
+            "updated_records": 0,
+            "failed_records": 0,
+            "start_time": None,
+            "end_time": None,
+            "processing_time": 0,
+        }
+
         # Ensure table exists
         self._ensure_table_exists()
 
@@ -62,14 +74,12 @@ class PersistenceWriter:
             logger.warning("No data to write")
             return {"status": "success", "new_records": 0, "updated_records": 0}
 
-        stats = {
-            "status": "success",
-            "total_records": len(transformed_data),
-            "new_records": 0,
-            "updated_records": 0,
-            "failed_records": 0,
-            "processing_time": 0
-        }
+        # Reset statistics for this write operation
+        self.stats["start_time"] = datetime.now()
+        self.stats["total_records"] = len(transformed_data)
+        self.stats["new_records"] = 0
+        self.stats["updated_records"] = 0
+        self.stats["failed_records"] = 0
 
         try:
             start_time = time.time()
@@ -114,9 +124,9 @@ class PersistenceWriter:
                                 batch_result = future.result()
 
                                 # Update statistics
-                                stats["new_records"] += batch_result["new_records"]
-                                stats["updated_records"] += batch_result["updated_records"]
-                                stats["failed_records"] += batch_result["failed_records"]
+                                self.stats["new_records"] += batch_result["new_records"]
+                                self.stats["updated_records"] += batch_result["updated_records"]
+                                self.stats["failed_records"] += batch_result["failed_records"]
 
                                 # Log progress
                                 completed += 1
@@ -130,11 +140,11 @@ class PersistenceWriter:
                                     future = executor.submit(self._process_batch, batch)
                                     active_futures[future] = idx
                                     logger.info(f"Scheduled new batch {idx+1}/{total_batches} "
-                                              f"({len(batch_queue)} remaining in queue)")
+                                          f"({len(batch_queue)} remaining in queue)")
 
                             except Exception as e:
                                 logger.error(f"Error processing batch {batch_idx}: {e}", exc_info=True)
-                                stats["failed_records"] += len(batches[batch_idx])
+                                self.stats["failed_records"] += len(batches[batch_idx])
 
                                 # Submit a new batch even if this one failed
                                 if batch_queue:
@@ -149,9 +159,9 @@ class PersistenceWriter:
                     batch_result = self._process_batch(batch)
 
                     # Update statistics
-                    stats["new_records"] += batch_result["new_records"]
-                    stats["updated_records"] += batch_result["updated_records"]
-                    stats["failed_records"] += batch_result["failed_records"]
+                    self.stats["new_records"] += batch_result["new_records"]
+                    self.stats["updated_records"] += batch_result["updated_records"]
+                    self.stats["failed_records"] += batch_result["failed_records"]
 
                     # Log progress
                     logger.info(f"Processed batch {i+1}/{len(batches)} ({(i+1)*self.batch_size}/{len(transformed_data)} records)")
@@ -162,19 +172,28 @@ class PersistenceWriter:
 
             # Calculate processing time
             end_time = time.time()
-            stats["processing_time"] = round(end_time - start_time, 2)
+            self.stats["processing_time"] = round(end_time - start_time, 2)
+            self.stats["end_time"] = datetime.now()
 
-            logger.info(f"Write operation completed in {stats['processing_time']} seconds: "
-                        f"{stats['new_records']} new records, "
-                        f"{stats['updated_records']} updated records, "
-                        f"{stats['failed_records']} failed records")
+            logger.info(f"Write operation completed in {self.stats['processing_time']} seconds: "
+                        f"{self.stats['new_records']} new records, "
+                        f"{self.stats['updated_records']} updated records, "
+                        f"{self.stats['failed_records']} failed records")
 
         except Exception as e:
             logger.error(f"Error writing to persistence layer: {e}", exc_info=True)
-            stats["status"] = "error"
-            stats["error"] = str(e)
+            self.stats["status"] = "error"
+            self.stats["error"] = str(e)
+            self.stats["end_time"] = datetime.now()
 
-        return stats
+        # Return a copy of the stats
+        return {
+            "status": self.stats.get("status", "success"),
+            "new_records": self.stats["new_records"],
+            "updated_records": self.stats["updated_records"],
+            "failed_records": self.stats["failed_records"],
+            "processing_time": self.stats["processing_time"]
+        }
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> Dict[str, int]:
         """
@@ -194,7 +213,6 @@ class PersistenceWriter:
 
         for record in batch:
             try:
-                # Check if record already exists
                 paper_id = record.get("paper_id")
                 if not paper_id:
                     logger.warning("Record missing paper_id, skipping")
@@ -438,3 +456,16 @@ class PersistenceWriter:
                 # Other error
                 logger.error(f"Error checking table existence: {e}")
                 raise
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get write operation statistics.
+
+        Returns:
+            Dictionary with write operation statistics
+        """
+        if self.stats["start_time"] and self.stats["end_time"]:
+            duration = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
+            self.stats["duration_seconds"] = duration
+
+        return self.stats

@@ -1,5 +1,6 @@
 import logging
 import pendulum
+from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 
@@ -29,6 +30,15 @@ class ArxivMetadataTransformer:
         self.config = config
         self.batch_size = config.get("batch_size", 1000)
         self.time_zone = "UTC"
+
+        # Initialize statistics
+        self.stats = {
+            "input_records": 0,
+            "output_records": 0,
+            "failed_records": 0,
+            "start_time": None,
+            "end_time": None,
+        }
 
     def transform(self, raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -65,12 +75,16 @@ class ArxivMetadataTransformer:
                 records_by_id[record_id]["update_date"] = record["update_date"]
 
         # Process combined records in batches
+        self.stats["start_time"] = datetime.now()
+        self.stats["input_records"] = len(records_by_id)
+
         transformed_records = []
         ids = list(records_by_id.keys())
 
         for i in range(0, len(ids), self.batch_size):
             batch_ids = ids[i:i + self.batch_size]
             logger.info(f"Transforming batch {i//self.batch_size + 1}, size: {len(batch_ids)}")
+            batch_failures = 0
 
             for record_id in batch_ids:
                 try:
@@ -81,6 +95,7 @@ class ArxivMetadataTransformer:
                     # Skip if we don't have both formats
                     if not arxiv_record or not arxiv_raw_record:
                         logger.warning(f"Record {record_id} missing one format, skipping")
+                        batch_failures += 1
                         continue
 
                     # Clean the combined record
@@ -95,11 +110,23 @@ class ArxivMetadataTransformer:
                         )
 
                         transformed_records.append(cleaned)
+                    else:
+                        # Record cleaning failed
+                        batch_failures += 1
 
                 except Exception as e:
                     logger.error(f"Error transforming record {record_id}: {e}", exc_info=True)
+                    batch_failures += 1
 
-        logger.info(f"Transformed {len(transformed_records)} records")
+            # Update statistics
+            self.stats["failed_records"] += batch_failures
+            logger.info(f"Batch {i//self.batch_size + 1} completed: {len(batch_ids) - batch_failures} successful, {batch_failures} failed")
+
+        # Update final statistics
+        self.stats["output_records"] = len(transformed_records)
+        self.stats["end_time"] = datetime.now()
+
+        logger.info(f"Transformed {self.stats['output_records']} records successfully, {self.stats['failed_records']} records failed")
         return transformed_records
 
     def _clean_record(self, arxiv_record: Dict[str, Any], arxiv_raw_record: Dict[str, Any], update_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -279,3 +306,16 @@ class ArxivMetadataTransformer:
             except Exception:
                 return None
         return None
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get transformation statistics.
+
+        Returns:
+            Dictionary with transformation statistics
+        """
+        if self.stats["start_time"] and self.stats["end_time"]:
+            duration = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
+            self.stats["duration_seconds"] = duration
+
+        return self.stats
