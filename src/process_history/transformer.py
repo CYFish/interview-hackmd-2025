@@ -146,7 +146,6 @@ class Transformer:
                 for author_parts in record["authors_parsed"]:
                     if isinstance(author_parts, list) and len(author_parts) >= 2:
                         last_name, first_name = author_parts[0], author_parts[1]
-                        print(f"last_name: {last_name} (type: {type(last_name)}), first_name: {first_name} (type: {type(first_name)})")
                         authors.append({
                             "last_name": last_name,
                             "first_name": first_name
