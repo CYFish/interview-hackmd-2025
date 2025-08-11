@@ -34,7 +34,7 @@ jobs:
         run: bash src/collect/deploy_lambda.sh
 
   deploy-collector-schedule:
-    if: ${{ github.event.inputs.deploy_collector == 'true' }}
+    if: ${{ github.event.inputs.deploy_collector_schedule == 'true' }}
     runs-on: ubuntu-latest
 
     steps:

@@ -34,7 +34,7 @@ jobs:
         run: bash src/process/deploy_lambda.sh
 
   deploy-processor-schedule:
-    if: ${{ github.event.inputs.deploy_processor == 'true' }}
+    if: ${{ github.event.inputs.deploy_processor_schedule == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
