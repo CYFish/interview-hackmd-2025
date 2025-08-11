@@ -34,6 +34,8 @@ def parse_args() -> Dict[str, Any]:
                         help="S3 bucket name (only used if not in local mode)")
     parser.add_argument("--chunk-size", type=int, default=10000,
                         help="Number of records to process in each batch")
+    parser.add_argument("--streaming", action="store_true",
+                        help="Use streaming mode to process data one record at a time (recommended for large files)")
 
     args = parser.parse_args()
 
@@ -45,6 +47,8 @@ def parse_args() -> Dict[str, Any]:
         "output_local": args.output_local,
         "s3_bucket": args.bucket,
         "batch_size": args.chunk_size,
+        "use_streaming": args.streaming,
+        "chunk_size": args.chunk_size,  # Use same value for both batch processing and streaming chunks
     }
 
     return config
@@ -71,8 +75,10 @@ def main() -> int:
         # Get input and output modes
         input_mode = "local" if config["input_local"] else "S3"
         output_mode = "local" if config["output_local"] else "S3"
+        processing_mode = "streaming" if config["use_streaming"] else "batch"
 
         print("\nProcessing completed!")
+        print(f"Processing mode: {processing_mode}")
         print(f"Input source: {input_mode}")
         print(f"Output destination: {output_mode}")
         print(f"Total records: {result['total_records']}")
@@ -81,6 +87,16 @@ def main() -> int:
         print(f"Records written: {result['records_written']}")
         print(f"Start time: {result['start_time']}")
         print(f"End time: {result['end_time']}")
+
+        # Calculate and display total duration
+        try:
+            from datetime import datetime
+            start = datetime.fromisoformat(result['start_time'])
+            end = datetime.fromisoformat(result['end_time'])
+            duration = (end - start).total_seconds()
+            print(f"Total duration: {duration:.2f} seconds")
+        except Exception:
+            pass
 
         # Print data quality metrics
         if "data_quality" in result:

@@ -37,6 +37,7 @@ class Pipeline:
         self.extractor = Extractor(config)
         self.transformer = Transformer(config)
         self.writer = Writer(config)
+        self.use_streaming = config.get("use_streaming", False)
 
         # Initialize statistics
         self.stats = {
@@ -53,6 +54,10 @@ class Pipeline:
         """
         Process historical ArXiv data.
 
+        This method supports two processing modes:
+        1. Batch mode: Load all data into memory, then process
+        2. Streaming mode: Process data one record at a time
+
         Returns:
             Dictionary with processing statistics
         """
@@ -61,8 +66,27 @@ class Pipeline:
         try:
             logger.info("Starting ArXiv historical data processing pipeline")
 
+            if self.use_streaming:
+                return self._process_streaming()
+            else:
+                return self._process_batch()
+
+        except Exception as e:
+            logger.error(f"Pipeline failed: {e}", exc_info=True)
+            self.stats["error"] = str(e)
+            self.stats["end_time"] = datetime.now().isoformat()
+            return self.stats
+
+    def _process_batch(self) -> Dict[str, Any]:
+        """
+        Process data in batch mode (loading all data into memory).
+
+        Returns:
+            Dictionary with processing statistics
+        """
+        try:
             # Step 1: Extract raw data
-            logger.info("Extracting data from source")
+            logger.info("Extracting data from source (batch mode)")
             start_time = time.time()
             raw_data = self.extractor.extract()
             extract_time = time.time() - start_time
@@ -105,7 +129,58 @@ class Pipeline:
                         f"wrote {self.stats['records_written']} records.")
 
         except Exception as e:
-            logger.error(f"Pipeline failed: {e}", exc_info=True)
+            logger.error(f"Batch processing failed: {e}", exc_info=True)
+            self.stats["error"] = str(e)
+
+        self.stats["end_time"] = datetime.now().isoformat()
+        return self.stats
+
+    def _process_streaming(self) -> Dict[str, Any]:
+        """
+        Process data in streaming mode (one record at a time).
+
+        This method processes data without loading the entire dataset into memory,
+        making it suitable for very large files.
+
+        Returns:
+            Dictionary with processing statistics
+        """
+        try:
+            # Step 1: Create data stream from source
+            logger.info("Starting streaming data processing")
+            start_time = time.time()
+
+            # Step 2: Extract, transform, and write in a streaming pipeline
+            logger.info("Extracting and processing data in streaming mode")
+
+            # Create the data stream
+            raw_data_stream = self.extractor.extract_stream()
+
+            # Transform the stream
+            transformed_stream = self.transformer.transform_stream(raw_data_stream)
+
+            # Write the transformed stream
+            write_result = self.writer.write_stream(transformed_stream)
+
+            # Get statistics from components
+            extract_stats = self.extractor.get_stats()
+            transform_stats = self.transformer.get_stats()
+            write_stats = self.writer.get_stats()
+
+            # Update pipeline statistics
+            self.stats["total_records"] = extract_stats["total_records"]
+            self.stats["successful_records"] = transform_stats["output_records"]
+            self.stats["failed_records"] = transform_stats["failed_records"]
+            self.stats["records_written"] = write_stats["successful_records"]
+
+            # Calculate total processing time
+            total_time = time.time() - start_time
+            logger.info(f"Streaming pipeline completed in {total_time:.2f} seconds")
+            logger.info(f"Processed {self.stats['successful_records']} records, "
+                        f"wrote {self.stats['records_written']} records.")
+
+        except Exception as e:
+            logger.error(f"Streaming processing failed: {e}", exc_info=True)
             self.stats["error"] = str(e)
 
         self.stats["end_time"] = datetime.now().isoformat()

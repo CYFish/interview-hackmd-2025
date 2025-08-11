@@ -64,6 +64,7 @@ class Writer:
         self.output_local = config.get("output_local", False)
         self.output_path = config.get("output_path")
         self.batch_size = config.get("batch_size", 1000)
+        self.chunk_size = config.get("chunk_size", 10000)  # Size for streaming chunks
 
         # Initialize S3 client if we need to write to S3
         if not self.output_local:
@@ -81,6 +82,9 @@ class Writer:
 
         # Initialize counters for file naming
         self.counters = {}
+
+        # Buffer for streaming writes
+        self.buffers = {}
 
     def write(self, transformed_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -134,6 +138,106 @@ class Writer:
 
         except Exception as e:
             logger.error(f"Error writing to storage: {e}", exc_info=True)
+            self.stats["status"] = "error"
+            self.stats["error"] = str(e)
+            self.stats["end_time"] = datetime.now()
+
+        # Return a copy of the stats
+        return {
+            "status": self.stats.get("status", "success"),
+            "records_written": self.stats["successful_records"],
+            "failed_records": self.stats["failed_records"],
+            "processing_time": self.stats["processing_time"]
+        }
+
+    def write_stream(self, transformed_data_stream):
+        """
+        Process and write transformed data in a streaming fashion.
+
+        This method processes records one by one as they come from the transformer,
+        buffering them by partition and writing to storage when the buffer reaches
+        the configured chunk size.
+
+        Args:
+            transformed_data_stream: Generator yielding transformed records
+
+        Returns:
+            Dict[str, Any]: Write operation statistics
+        """
+        if not transformed_data_stream:
+            logger.warning("No data stream to write")
+            return {"status": "success", "records_written": 0}
+
+        # Reset statistics for this write operation
+        self.stats["start_time"] = datetime.now()
+        self.stats["total_records"] = 0
+        self.stats["successful_records"] = 0
+        self.stats["failed_records"] = 0
+
+        # Clear buffers
+        self.buffers = {}
+        total_processed = 0
+
+        try:
+            start_time = time.time()
+
+            # Process each record as it comes
+            for i, record in enumerate(transformed_data_stream):
+                try:
+                    # Get partition key from record
+                    if all(k in record for k in ["year", "month", "day"]):
+                        partition_key = f"year={record['year']}/month={record['month']}/day={record['day']}"
+                    else:
+                        # Try to derive partition from submitted_date
+                        submitted_date = datetime.fromisoformat(record["submitted_date"]) if "submitted_date" in record else datetime.now()
+                        partition_key = f"year={submitted_date.year}/month={submitted_date.month:02}/day={submitted_date.day:02}"
+
+                    # Add to buffer
+                    if partition_key not in self.buffers:
+                        self.buffers[partition_key] = []
+                    self.buffers[partition_key].append(record)
+
+                    # Write when buffer reaches chunk size
+                    if len(self.buffers[partition_key]) >= self.chunk_size:
+                        self._write_parquet(partition_key, self.buffers[partition_key])
+                        total_processed += len(self.buffers[partition_key])
+                        self.stats["successful_records"] += len(self.buffers[partition_key])
+                        logger.info(f"Processed {total_processed} records so far")
+                        self.buffers.pop(partition_key)
+
+                except Exception as e:
+                    logger.error(f"Error processing record for writing: {e}", exc_info=True)
+                    self.stats["failed_records"] += 1
+
+                # Update total count
+                self.stats["total_records"] += 1
+
+                # Log progress periodically
+                if (i + 1) % 10000 == 0:
+                    logger.info(f"Streaming write: processed {i + 1} records so far")
+
+            # Process any remaining records in buffers
+            for partition_key, buffered_records in list(self.buffers.items()):
+                if buffered_records:
+                    try:
+                        self._write_parquet(partition_key, buffered_records)
+                        total_processed += len(buffered_records)
+                        self.stats["successful_records"] += len(buffered_records)
+                    except Exception as e:
+                        logger.error(f"Error writing remaining records for partition {partition_key}: {e}", exc_info=True)
+                        self.stats["failed_records"] += len(buffered_records)
+
+            # Calculate processing time
+            end_time = time.time()
+            self.stats["processing_time"] = round(end_time - start_time, 2)
+            self.stats["end_time"] = datetime.now()
+
+            logger.info(f"Streaming write completed in {self.stats['processing_time']} seconds: "
+                        f"{self.stats['successful_records']} records written, "
+                        f"{self.stats['failed_records']} records failed")
+
+        except Exception as e:
+            logger.error(f"Error in streaming write: {e}", exc_info=True)
             self.stats["status"] = "error"
             self.stats["error"] = str(e)
             self.stats["end_time"] = datetime.now()

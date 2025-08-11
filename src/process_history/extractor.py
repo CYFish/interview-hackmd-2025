@@ -48,7 +48,10 @@ class Extractor:
 
     def extract(self) -> List[Dict[str, Any]]:
         """
-        Extract data from the historical ArXiv JSON file.
+        Extract all data from the historical ArXiv JSON file at once.
+
+        Note: This method loads the entire dataset into memory.
+        For large files, consider using extract_stream() instead.
 
         Returns:
             List of raw records
@@ -57,7 +60,7 @@ class Extractor:
         self.stats["start_time"] = datetime.now()
 
         try:
-            logger.info(f"Extracting data from {'local file' if self.input_local else 'S3'}: {self.input_path}")
+            logger.info(f"Extracting all data from {'local file' if self.input_local else 'S3'}: {self.input_path}")
 
             data = []
             if self.input_local:
@@ -94,12 +97,67 @@ class Extractor:
             logger.info(f"Successfully extracted {len(data)} records from historical data file")
             self.stats["end_time"] = datetime.now()
             return data
-
         except Exception as e:
             logger.error(f"Error extracting data from {self.input_path}: {e}", exc_info=True)
             self.stats["failed_files"] = 1
             self.stats["end_time"] = datetime.now()
             return []
+
+    def extract_stream(self):
+        """
+        Stream data from the historical ArXiv JSON file one record at a time.
+
+        This generator function yields records one by one without loading the entire
+        dataset into memory, making it suitable for processing large files.
+
+        Yields:
+            Dict[str, Any]: Individual JSON records
+        """
+        from datetime import datetime
+        self.stats["start_time"] = datetime.now()
+        record_count = 0
+
+        try:
+            logger.info(f"Streaming data from {'local file' if self.input_local else 'S3'}: {self.input_path}")
+
+            if self.input_local:
+                # Stream from local file system
+                with open(self.input_path, "r", encoding="utf-8") as file:
+                    for i, line in enumerate(file):
+                        if line.strip():  # Skip empty lines
+                            try:
+                                record = json.loads(line.strip())
+                                record_count += 1
+                                if record_count % 1000 == 0:
+                                    logger.info(f"Streamed {record_count} records so far")
+                                yield record
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Error parsing JSON at line {i + 1}: {e}")
+            else:
+                # Stream from S3
+                file_object = self.s3.get_object(Bucket=self.s3_bucket, Key=self.input_path)
+                # Use boto3's streaming capabilities
+                for i, line in enumerate(file_object["Body"].iter_lines()):
+                    if line:  # Skip empty lines
+                        try:
+                            record = json.loads(line.decode("utf-8"))
+                            record_count += 1
+                            if record_count % 1000 == 0:
+                                logger.info(f"Streamed {record_count} records so far")
+                            yield record
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Error parsing JSON at line {i + 1}: {e}")
+
+            # Update statistics
+            self.stats["total_records"] = record_count
+            self.stats["processed_files"] = 1
+            logger.info(f"Successfully streamed {record_count} records from historical data file")
+
+        except Exception as e:
+            logger.error(f"Error streaming data from {self.input_path}: {e}", exc_info=True)
+            self.stats["failed_files"] = 1
+        finally:
+            self.stats["end_time"] = datetime.now()
 
     def get_stats(self) -> Dict[str, Any]:
         """

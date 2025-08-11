@@ -92,6 +92,61 @@ class Transformer:
         logger.info(f"Transformed {self.stats['output_records']} records successfully, {self.stats['failed_records']} records failed")
         return transformed_records
 
+    def transform_stream(self, raw_data_stream):
+        """
+        Transform raw ArXiv historical data in a streaming fashion.
+
+        This generator function processes records one by one without storing all
+        transformed records in memory, making it suitable for large datasets.
+
+        Args:
+            raw_data_stream: Generator yielding raw records
+
+        Yields:
+            Dict[str, Any]: Transformed records
+        """
+        self.stats["start_time"] = datetime.now()
+        record_count = 0
+        success_count = 0
+        failure_count = 0
+        batch_count = 0
+        batch_records = 0
+
+        try:
+            for record in raw_data_stream:
+                record_count += 1
+                batch_records += 1
+
+                try:
+                    # Clean and transform the record
+                    cleaned = self._clean_record(record)
+                    if cleaned:
+                        success_count += 1
+                        yield cleaned
+                    else:
+                        failure_count += 1
+                except Exception as e:
+                    logger.error(f"Error transforming record {record.get('id', 'unknown')}: {e}", exc_info=True)
+                    failure_count += 1
+
+                # Log progress periodically
+                if batch_records >= self.batch_size:
+                    batch_count += 1
+                    logger.info(f"Transformed batch {batch_count}, processed {record_count} records so far")
+                    batch_records = 0
+
+            # Update statistics
+            self.stats["input_records"] = record_count
+            self.stats["output_records"] = success_count
+            self.stats["failed_records"] = failure_count
+
+            logger.info(f"Streaming transformation completed: {success_count} records successful, {failure_count} records failed")
+
+        except Exception as e:
+            logger.error(f"Error in streaming transformation: {e}", exc_info=True)
+        finally:
+            self.stats["end_time"] = datetime.now()
+
     def _clean_record(self, record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Clean and normalize a single ArXiv record.
