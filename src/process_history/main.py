@@ -1,11 +1,7 @@
-import sys
+import argparse
 import logging
-from datetime import datetime
-
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
+import sys
+from typing import Dict, Any
 
 from pipeline import Pipeline
 
@@ -13,77 +9,100 @@ from pipeline import Pipeline
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 
-def process_args():
+def parse_args() -> Dict[str, Any]:
     """
-    Process job arguments.
+    Parse command line arguments.
 
     Returns:
-        Dictionary with processed arguments
+        Dictionary with parsed arguments
     """
-    args = getResolvedOptions(sys.argv, [
-        "JOB_NAME",
-        "database_name",
-        "table_name",
-        "input_path",
-        "output_path",
-        "bucket",
-        "generate_models",
-        "write_models",
-        "use_cloudwatch",
-        "region",
-    ])
+    parser = argparse.ArgumentParser(description="Process historical ArXiv metadata")
+    parser.add_argument("--input-path", type=str, required=True,
+                        help="Path to JSON file containing ArXiv data (local path or S3 key)")
+    parser.add_argument("--output-path", type=str, required=True,
+                        help="Path for output Parquet files (S3 prefix or local directory)")
+    parser.add_argument("--input-local", action="store_true",
+                        help="Read input from local file system instead of S3")
+    parser.add_argument("--output-local", action="store_true",
+                        help="Write output to local file system instead of S3")
+    parser.add_argument("--bucket", type=str, default="hackmd-project-2025",
+                        help="S3 bucket name (only used if not in local mode)")
+    parser.add_argument("--chunk-size", type=int, default=10000,
+                        help="Number of records to process in each batch")
 
-    # Convert string boolean parameters to actual booleans
-    for bool_param in ['generate_models', 'write_models', 'use_cloudwatch']:
-        if bool_param in args:
-            args[bool_param] = args[bool_param].lower() == 'true'
+    args = parser.parse_args()
 
-    return args
-
-
-def main():
-    """
-    Main entry point for the Glue job.
-    """
-    # Initialize Glue context
-    args = process_args()
-    sc = SparkContext()
-    glue_context = GlueContext(sc)
-    spark = glue_context.spark_session
-    job = Job(glue_context)
-    job.init(args['JOB_NAME'], args)
-
-    # Configure the pipeline
+    # Convert to config dictionary
     config = {
-        "database_name": args["database_name"],
-        "table_name": args["table_name"],
-        "input_path": args["input_path"],
-        "output_path": args["output_path"],
-        "bucket": args["bucket"],
-        "generate_models": args.get("generate_models", False),
-        "write_models": args.get("write_models", False),
-        "use_cloudwatch": args.get("use_cloudwatch", False),
-        "update_mode": "overwrite",  # Always overwrite for historical data
-        "region": args.get("region", "ap-northeast-1"),
-        "job_name": args["JOB_NAME"],
-        "run_id": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "input_path": args.input_path,
+        "output_path": args.output_path,
+        "input_local": args.input_local,
+        "output_local": args.output_local,
+        "s3_bucket": args.bucket,
+        "batch_size": args.chunk_size,
     }
 
-    # Create pipeline and run
-    pipeline = Pipeline(glue_context, config)
-    result = pipeline.run()
+    return config
 
-    # Display results
-    print(f"Processing result: {result}")
 
-    # Commit the job
-    job.commit()
+def main() -> int:
+    """
+    Main function for command line execution.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    try:
+        # Parse command line arguments
+        config = parse_args()
+
+        # Create pipeline
+        pipeline = Pipeline(config)
+
+        # Run processing
+        result = pipeline.process()
+
+        # Display results
+        # Get input and output modes
+        input_mode = "local" if config["input_local"] else "S3"
+        output_mode = "local" if config["output_local"] else "S3"
+
+        print("\nProcessing completed!")
+        print(f"Input source: {input_mode}")
+        print(f"Output destination: {output_mode}")
+        print(f"Total records: {result['total_records']}")
+        print(f"Successful records: {result['successful_records']}")
+        print(f"Failed records: {result['failed_records']}")
+        print(f"Records written: {result['records_written']}")
+        print(f"Start time: {result['start_time']}")
+        print(f"End time: {result['end_time']}")
+
+        # Print data quality metrics
+        if "data_quality" in result:
+            print("\nData Quality Report:")
+            quality = result["data_quality"]
+            if "missing_titles_pct" in quality:
+                print(f"Missing titles: {quality['missing_titles_pct']}%")
+            if "missing_abstracts_pct" in quality:
+                print(f"Missing abstracts: {quality['missing_abstracts_pct']}%")
+            if "missing_categories_pct" in quality:
+                print(f"Missing categories: {quality['missing_categories_pct']}%")
+            if "missing_authors_pct" in quality:
+                print(f"Missing authors: {quality['missing_authors_pct']}%")
+            if "anomalies" in quality and quality["anomalies"]:
+                print(f"Anomalies detected: {len(quality['anomalies'])}")
+
+        return 0  # Success
+
+    except Exception as e:
+        logger.error(f"Error in main function: {e}", exc_info=True)
+        return 1  # Failure
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

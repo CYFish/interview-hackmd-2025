@@ -1,388 +1,367 @@
 import logging
-from typing import Dict, Any
+import re
+import pendulum
 from datetime import datetime
-
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import (
-    col, lit, to_date, size, array, when, regexp_replace,
-    datediff, date_format, expr, to_timestamp
-)
-from pyspark.sql.types import (
-    StructType, StructField, StringType, IntegerType,
-    FloatType, BooleanType, ArrayType, DateType
-)
+from typing import Dict, List, Any, Optional
 
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 class Transformer:
     """
-    Responsible for transforming raw ArXiv historical data using AWS Glue.
+    Transforms raw ArXiv historical data into a structured format.
 
-    This class handles data cleaning, normalization, and feature extraction
-    for the ArXiv metadata dataset, including derived metrics calculation.
+    This class handles data cleaning, normalization, and enrichment
+    of historical ArXiv data.
     """
 
-    def __init__(self, glue_context, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the Glue data transformer for ArXiv historical data.
+        Initialize the ArXiv historical data transformer.
 
         Args:
-            glue_context: The GlueContext for the current job
             config: Configuration dictionary with transformation parameters
         """
-        self.glue_context = glue_context
-        self.spark = glue_context.spark_session
         self.config = config
-        self.time_zone = config.get("time_zone", "UTC")
+        self.batch_size = config.get("batch_size", 1000)
+        self.time_zone = "UTC"
 
-        # Statistics tracking
+        # Initialize statistics
         self.stats = {
             "input_records": 0,
             "output_records": 0,
             "failed_records": 0,
             "start_time": None,
             "end_time": None,
-            "duration_seconds": 0
+            "data_quality": {
+                "missing_titles": 0,
+                "missing_abstracts": 0,
+                "missing_categories": 0,
+                "missing_authors": 0,
+                "anomalies": []
+            }
         }
 
-        # Define schema for the output data
-        self.output_schema = StructType([
-            # Core paper metadata
-            StructField("id", StringType(), True),
-            StructField("title", StringType(), True),
-            StructField("abstract", StringType(), True),
-            StructField("categories", StringType(), True),
-            StructField("doi", StringType(), True),
-
-            # Temporal data
-            StructField("submitted_date", DateType(), True),
-            StructField("update_date", DateType(), True),
-            StructField("published_date", DateType(), True),
-            StructField("version_count", IntegerType(), True),
-
-            # Author and institution data
-            StructField("authors_parsed", ArrayType(ArrayType(StringType())), True),
-            StructField("institutions", StringType(), True),
-
-            # Publication data
-            StructField("journal_ref", StringType(), True),
-            StructField("is_published", BooleanType(), True),
-
-            # Additional fields
-            StructField("update_frequency", FloatType(), True),
-            StructField("submission_to_publication", FloatType(), True),
-
-            # Partition columns
-            StructField("year", StringType(), True),
-            StructField("month", StringType(), True),
-            StructField("day", StringType(), True),
-        ])
-
-    def transform(self, raw_df: DataFrame) -> DataFrame:
+    def transform(self, raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Transform raw ArXiv historical data into a structured format.
 
         Args:
-            raw_df: Raw DataFrame with ArXiv metadata
+            raw_data: List of raw records from the historical data file
 
         Returns:
-            Transformed DataFrame with normalized fields and derived metrics
+            List of transformed records
         """
         self.stats["start_time"] = datetime.now()
-        input_count = raw_df.count()
-        self.stats["input_records"] = input_count
-        logger.info(f"Transforming {input_count} ArXiv records")
+        self.stats["input_records"] = len(raw_data)
 
+        transformed_records = []
+
+        # Process records in batches
+        for i in range(0, len(raw_data), self.batch_size):
+            batch = raw_data[i:i+self.batch_size]
+            logger.info(f"Transforming batch {i//self.batch_size + 1}, size: {len(batch)}")
+            batch_failures = 0
+
+            for record in batch:
+                try:
+                    # Clean and transform the record
+                    cleaned = self._clean_record(record)
+                    if cleaned:
+                        transformed_records.append(cleaned)
+                    else:
+                        batch_failures += 1
+                except Exception as e:
+                    logger.error(f"Error transforming record {record.get('id', 'unknown')}: {e}", exc_info=True)
+                    batch_failures += 1
+
+            # Update statistics
+            self.stats["failed_records"] += batch_failures
+            logger.info(f"Batch {i//self.batch_size + 1} completed: {len(batch) - batch_failures} successful, {batch_failures} failed")
+
+        # Update final statistics
+        self.stats["output_records"] = len(transformed_records)
+        self.stats["end_time"] = datetime.now()
+
+        logger.info(f"Transformed {self.stats['output_records']} records successfully, {self.stats['failed_records']} records failed")
+        return transformed_records
+
+    def _clean_record(self, record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Clean and normalize a single ArXiv record.
+
+        Args:
+            record: Raw ArXiv record from historical data
+
+        Returns:
+            Cleaned record or None if record should be skipped
+        """
         try:
-            # Return empty DataFrame if no input data
-            if input_count == 0:
-                logger.warning("No records to transform")
-                transformed_df = self.spark.createDataFrame([], self.output_schema)
-                self.stats["end_time"] = datetime.now()
-                return transformed_df
+            # Extract paper ID
+            paper_id = record.get("id")
+            if not paper_id:
+                logger.warning("Record missing ID, skipping")
+                return None
 
-            # Process the data
-            df = self._clean_core_metadata(raw_df)
-            df = self._process_dates(df)
-            df = self._process_versions(df)
-            df = self._process_authors(df)
-            df = self._process_publication_info(df)
-            df = self._calculate_derived_metrics(df)
-            df = self._create_partition_columns(df)
+            # Build base item with core fields
+            item = {
+                "paper_id": paper_id,
+                "title": self._clean_text(record.get("title", "")),
+                "abstract": self._clean_text(record.get("abstract", "")),
+                "doi": record.get("doi", ""),
+                "upload_db_time": pendulum.now(self.time_zone).isoformat()
+            }
 
-            # Select only the columns in our schema
-            column_list = [field.name for field in self.output_schema.fields]
-            transformed_df = df.select(*column_list)
+            # Track data quality
+            if not item["title"]:
+                self.stats["data_quality"]["missing_titles"] += 1
+            if not item["abstract"]:
+                self.stats["data_quality"]["missing_abstracts"] += 1
 
-            # Count successful transformations
-            output_count = transformed_df.count()
-            self.stats["output_records"] = output_count
-            self.stats["failed_records"] = input_count - output_count
+            # Extract categories
+            categories = record.get("categories", "")
+            if not categories:
+                self.stats["data_quality"]["missing_categories"] += 1
+                item["categories"] = []
+            else:
+                # Split categories into a list
+                item["categories"] = categories.split() if isinstance(categories, str) else []
 
-            logger.info(f"Successfully transformed {output_count} records ({self.stats['failed_records']} failed)")
-            self.stats["end_time"] = datetime.now()
-            return transformed_df
+            # Set primary category as the first category
+            item["primary_category"] = item["categories"][0] if item["categories"] else ""
+
+            # Extract publication information
+            item["journal_ref"] = record.get("journal-ref", "")
+            item["is_published"] = bool(item["journal_ref"])
+
+            # Process author information
+            if "authors_parsed" in record and isinstance(record["authors_parsed"], list):
+                authors = []
+                for author_parts in record["authors_parsed"]:
+                    if isinstance(author_parts, list) and len(author_parts) >= 2:
+                        last_name, first_name = author_parts[0], author_parts[1]
+                        print(f"last_name: {last_name} (type: {type(last_name)}), first_name: {first_name} (type: {type(first_name)})")
+                        authors.append({
+                            "last_name": last_name,
+                            "first_name": first_name
+                        })
+                item["authors"] = authors
+            else:
+                self.stats["data_quality"]["missing_authors"] += 1
+                item["authors"] = []
+
+            # Extract institution from submitter email if available
+            item["institution"] = ""
+            if "submitter" in record and isinstance(record["submitter"], str):
+                try:
+                    if "@" in record["submitter"]:
+                        # Try to extract email domain as institution
+                        email_parts = record["submitter"].split("@")
+                        if len(email_parts) > 1:
+                            domain = email_parts[1].split(".")[0]
+                            item["institution"] = domain
+                except Exception as e:
+                    logger.debug(f"Could not extract institution: {e}")
+
+            # Process versions and dates
+            item["version_count"] = 0
+            item["submitted_date"] = None
+            item["update_date"] = None
+            item["published_date"] = None
+
+            # Extract version information
+            if "versions" in record and isinstance(record["versions"], list):
+                item["versions"] = record["versions"]
+                item["version_count"] = len(record["versions"])
+
+                # Parse submission date from the first version
+                version_dates = []
+                try:
+                    version_dates = [
+                        pendulum.from_format(
+                            version["created"], "ddd, D MMM YYYY HH:mm:ss z").in_timezone(self.time_zone)
+                        for version in record["versions"]
+                    ]
+                    version_dates.sort()
+                except Exception as e:
+                    logger.warning(f"Error parsing submission date: {e}")
+                    item["submitted_date"] = None
+
+                item["submitted_date"] = version_dates[0].date().isoformat()
+
+                item["published_date"] = version_dates[-1].date(
+                ).isoformat() if item["is_published"] else None
+
+            # Extract update_date
+            try:
+                item["update_date"] = pendulum.parse(record.get("update_date", None)).date().isoformat()
+            except Exception as e:
+                logger.warning(f"Error parsing update_date: {e}")
+                item["update_date"] = None
+
+            # Check for critical missing data
+            if not item["submitted_date"]:
+                # Use current date as last resort
+                today = pendulum.now().date().isoformat()
+                item["submitted_date"] = today
+
+            if not item["update_date"]:
+                item["update_date"] = item["submitted_date"]
+
+            if not item["version_count"]:
+                item["version_count"] = 1  # Default to 1
+
+            # Calculate derived metrics
+            item["update_frequency"] = self._calculate_update_frequency(record)
+            item["submission_to_publication"] = self._calculate_submission_to_publication(
+                item["submitted_date"],
+                item["published_date"]
+            )
+
+            # Create partition columns based on submitted date
+            try:
+                submitted_date = pendulum.parse(item["submitted_date"])
+                item["year"] = str(submitted_date.year)
+                item["month"] = f"{submitted_date.month:02}"
+                item["day"] = f"{submitted_date.day:02}"
+            except Exception:
+                item["year"] = "unknown"
+                item["month"] = "00"
+                item["day"] = "00"
+
+            return item
 
         except Exception as e:
-            logger.error(f"Error transforming data: {str(e)}", exc_info=True)
-            self.stats["end_time"] = datetime.now()
-            raise RuntimeError(f"Failed to transform ArXiv data: {str(e)}") from e
+            logger.error(f"Error transforming record {record.get('id', 'unknown')}: {e}", exc_info=True)
+            return None
 
-    def _clean_core_metadata(self, df: DataFrame) -> DataFrame:
+    def _clean_text(self, text: str) -> str:
         """
-        Clean and normalize core metadata fields.
+        Clean and normalize text fields.
 
         Args:
-            df: Input DataFrame
+            text: Raw text string
 
         Returns:
-            DataFrame with cleaned core metadata
+            Cleaned text string
         """
-        logger.info("Cleaning core metadata fields")
+        if not text:
+            return ""
 
-        # Clean and normalize text fields
-        if "id" in df.columns:
-            df = df.withColumn("id", col("id").cast(StringType()))
+        # Remove extra whitespace
+        cleaned = " ".join(text.split())
+        return cleaned
 
-        if "title" in df.columns:
-            # Clean title: remove extra whitespace and normalize
-            df = df.withColumn(
-                "title",
-                regexp_replace(regexp_replace(col("title"), "\n", " "), "\\s+", " ")
-            )
-        else:
-            df = df.withColumn("title", lit(None).cast(StringType()))
-
-        if "abstract" in df.columns:
-            # Clean abstract: remove extra whitespace and normalize
-            df = df.withColumn(
-                "abstract",
-                regexp_replace(regexp_replace(col("abstract"), "\n", " "), "\\s+", " ")
-            )
-        else:
-            df = df.withColumn("abstract", lit(None).cast(StringType()))
-
-        if "categories" in df.columns:
-            df = df.withColumn("categories", col("categories").cast(StringType()))
-        else:
-            df = df.withColumn("categories", lit(None).cast(StringType()))
-
-        if "doi" in df.columns:
-            df = df.withColumn("doi", col("doi").cast(StringType()))
-        else:
-            df = df.withColumn("doi", lit(None).cast(StringType()))
-
-        return df
-
-    def _process_dates(self, df: DataFrame) -> DataFrame:
+    def _parse_arxiv_date(self, date_str: str) -> Optional[pendulum.DateTime]:
         """
-        Process and normalize date fields.
+        Parse various date formats from arXiv records.
 
         Args:
-            df: Input DataFrame
+            date_str: Date string in various formats
 
         Returns:
-            DataFrame with processed date fields
+            Parsed pendulum DateTime object or None if parsing fails
         """
-        logger.info("Processing date fields")
+        if not date_str:
+            return None
 
-        # Parse update_date if available
-        if "update_date" in df.columns:
-            df = df.withColumn("update_date", to_date(col("update_date")))
-        else:
-            df = df.withColumn("update_date", lit(None).cast(DateType()))
+        try:
+            # Try standard ISO format first
+            return pendulum.parse(date_str)
+        except Exception:
+            pass
 
-        # Initialize submitted_date and published_date (will be updated in version processing)
-        df = df.withColumn("submitted_date", lit(None).cast(DateType()))
-        df = df.withColumn("published_date", lit(None).cast(DateType()))
+        try:
+            # Try RFC 2822 format (used in arXivRaw versions)
+            # Example: "Mon, 28 Sep 2009 12:45:46 GMT"
+            dt = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %Z")
+            return pendulum.instance(dt)
+        except Exception:
+            pass
 
-        return df
+        try:
+            # Try to extract date from string with regex
+            # Look for patterns like YYYY-MM-DD or DD MMM YYYY
+            date_patterns = [
+                r'(\d{4}-\d{2}-\d{2})',  # YYYY-MM-DD
+                r'(\d{2} \w{3} \d{4})',   # DD MMM YYYY
+            ]
 
-    def _process_versions(self, df: DataFrame) -> DataFrame:
+            for pattern in date_patterns:
+                match = re.search(pattern, date_str)
+                if match:
+                    extracted_date = match.group(1)
+                    return pendulum.parse(extracted_date)
+        except Exception:
+            pass
+
+        # If all parsing attempts fail
+        logger.warning(f"Unable to parse date string: {date_str}")
+        return None
+
+    def _calculate_update_frequency(self, record: Dict[str, Any]) -> Optional[float]:
         """
-        Process version information and extract date information.
+        Calculate the average update frequency in days.
 
         Args:
-            df: Input DataFrame
+            record: ArXiv metadata record
 
         Returns:
-            DataFrame with processed version information
+            Average days between updates or None if not applicable
         """
-        logger.info("Processing version information")
+        versions = record.get("versions", [])
+        if len(versions) <= 1:
+            return None
 
-        # Process versions array if it exists
-        if "versions" in df.columns:
-            # Count versions
-            df = df.withColumn("version_count", size(col("versions")))
+        try:
+            dates = []
+            for version in versions:
+                if "created" in version:
+                    date = self._parse_arxiv_date(version["created"])
+                    if date:
+                        dates.append(date)
 
-            # Use to_timestamp with format string to parse version dates
-            # Format for "Mon, 2 Apr 2007 19:18:42 GMT"
-            date_format_str = "EEE, d MMM yyyy HH:mm:ss z"
+            if len(dates) <= 1:
+                return None
 
-            # Extract first version date (submission date)
-            df = df.withColumn(
-                "submitted_date",
-                when(
-                    size(col("versions")) > 0,
-                    to_date(to_timestamp(expr("versions[0].created"), date_format_str))
-                ).otherwise(lit(None).cast(DateType()))
-            )
+            dates.sort()
+            total_days = (dates[-1] - dates[0]).total_days()
+            return total_days / (len(dates) - 1)
+        except Exception as e:
+            logger.debug(f"Could not calculate update frequency: {e}")
+            return None
 
-            # If journal ref exists, use the last version date as publication date
-            df = df.withColumn(
-                "published_date",
-                when(
-                    col("journal-ref").isNotNull() & (size(col("versions")) > 0),
-                    to_date(to_timestamp(
-                        expr(f"versions[{size(col('versions'))-1}].created"),
-                        date_format_str
-                    ))
-                ).otherwise(lit(None).cast(DateType()))
-            )
-        else:
-            # Default values if no versions
-            df = df.withColumn("version_count", lit(1).cast(IntegerType()))
-
-        return df
-
-    def _process_authors(self, df: DataFrame) -> DataFrame:
+    def _calculate_submission_to_publication(
+        self,
+        submitted_date: Optional[str],
+        published_date: Optional[str]
+    ) -> Optional[float]:
         """
-        Process author information and extract institutions.
+        Calculate days from submission to publication.
 
         Args:
-            df: Input DataFrame
+            submitted_date: Date of first submission
+            published_date: Date of publication
 
         Returns:
-            DataFrame with processed author information
+            Number of days or None if not applicable
         """
-        logger.info("Processing author information")
-
-        # Handle authors_parsed array
-        if "authors_parsed" in df.columns:
-            # Ensure it's the right format (array of arrays)
-            if df.select("authors_parsed").dtypes[0][1].startswith("array<array<string>>"):
-                # Already in the right format
-                pass
-            elif df.select("authors_parsed").dtypes[0][1].startswith("array<string>"):
-                # Convert array of strings to array of array of strings
-                df = df.withColumn("authors_parsed", array(col("authors_parsed")))
-            else:
-                # Default empty array
-                df = df.withColumn("authors_parsed", lit(array()).cast("array<array<string>>"))
-        else:
-            df = df.withColumn("authors_parsed", lit(array()).cast("array<array<string>>"))
-
-        # Extract institution from submitter if available
-        if "submitter" in df.columns:
-            # Try to extract email domain as institution
-            df = df.withColumn(
-                "institutions",
-                when(
-                    col("submitter").contains("@"),
-                    expr("split(split(submitter, '@')[1], '\\\\.')[0]")
-                ).otherwise(lit(None).cast(StringType()))
-            )
-        else:
-            df = df.withColumn("institutions", lit(None).cast(StringType()))
-
-        return df
-
-    def _process_publication_info(self, df: DataFrame) -> DataFrame:
-        """
-        Process publication information.
-
-        Args:
-            df: Input DataFrame
-
-        Returns:
-            DataFrame with processed publication information
-        """
-        logger.info("Processing publication information")
-
-        # Handle journal reference and publication status
-        if "journal-ref" in df.columns:
-            df = df.withColumn("journal_ref", col("journal-ref").cast(StringType()))
-            df = df.withColumn("is_published", col("journal_ref").isNotNull())
-        else:
-            df = df.withColumn("journal_ref", lit(None).cast(StringType()))
-            df = df.withColumn("is_published", lit(False))
-
-        return df
-
-    def _calculate_derived_metrics(self, df: DataFrame) -> DataFrame:
-        """
-        Calculate derived metrics like update frequency and time to publication.
-
-        Args:
-            df: Input DataFrame
-
-        Returns:
-            DataFrame with calculated metrics
-        """
-        logger.info("Calculating derived metrics")
-
-        # Calculate update frequency (average days between versions)
-        df = df.withColumn(
-            "update_frequency",
-            when(
-                (col("version_count") > 1) & col("submitted_date").isNotNull() & col("update_date").isNotNull(),
-                datediff(col("update_date"), col("submitted_date")) / (col("version_count") - 1)
-            ).otherwise(lit(None).cast(FloatType()))
-        )
-
-        # Calculate submission to publication time
-        df = df.withColumn(
-            "submission_to_publication",
-            when(
-                col("is_published") & col("submitted_date").isNotNull() & col("published_date").isNotNull(),
-                datediff(col("published_date"), col("submitted_date"))
-            ).otherwise(lit(None).cast(FloatType()))
-        )
-
-        return df
-
-    def _create_partition_columns(self, df: DataFrame) -> DataFrame:
-        """
-        Create partition columns based on submitted date.
-
-        Args:
-            df: Input DataFrame
-
-        Returns:
-            DataFrame with partition columns
-        """
-        logger.info("Creating partition columns")
-
-        # Create year, month, day partition columns from submitted_date
-        df = df.withColumn(
-            "year",
-            when(
-                col("submitted_date").isNotNull(),
-                date_format(col("submitted_date"), "yyyy")
-            ).otherwise(lit("unknown"))
-        )
-
-        df = df.withColumn(
-            "month",
-            when(
-                col("submitted_date").isNotNull(),
-                date_format(col("submitted_date"), "MM")
-            ).otherwise(lit("00"))
-        )
-
-        df = df.withColumn(
-            "day",
-            when(
-                col("submitted_date").isNotNull(),
-                date_format(col("submitted_date"), "dd")
-            ).otherwise(lit("00"))
-        )
-
-        return df
+        if submitted_date and published_date:
+            try:
+                submit_date = pendulum.parse(submitted_date)
+                publish_date = pendulum.parse(published_date)
+                delta = publish_date - submit_date
+                return delta.total_days()
+            except Exception as e:
+                logger.debug(f"Could not calculate submission to publication time: {e}")
+                return None
+        return None
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -392,8 +371,7 @@ class Transformer:
             Dictionary with transformation statistics
         """
         if self.stats["start_time"] and self.stats["end_time"]:
-            self.stats["duration_seconds"] = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
-            logger.info(f"Transformation completed in {self.stats['duration_seconds']:.2f} seconds")
-            logger.info(f"Processed {self.stats['input_records']} records: {self.stats['output_records']} successful, {self.stats['failed_records']} failed")
+            duration = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
+            self.stats["duration_seconds"] = duration
 
         return self.stats
