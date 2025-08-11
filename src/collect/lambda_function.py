@@ -31,8 +31,8 @@ def lambda_handler(event, context):
         logger.info(f"Received event: {json.dumps(event)}")
 
         # Extract parameters from event or use defaults
-        from_date = event.get("from_date")
-        to_date = event.get("to_date")
+        from_date = event.get("from_date", None)
+        to_date = event.get("to_date", None)
         bucket = event.get("bucket", "hackmd-project-2025")
         batch_size = int(event.get("batch_size", 1000))
 
