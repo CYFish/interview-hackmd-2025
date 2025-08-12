@@ -218,7 +218,7 @@ class Collector:
         Returns:
             The number of objects deleted
         """
-        prefix = f"raw/{format}/{file_date.to_date_string()}/"
+        prefix = f"data/raw/{format}/{file_date.to_date_string()}/"
         response = self.s3.list_objects_v2(
             Bucket=self.bucket,
             Prefix=prefix,
@@ -353,7 +353,7 @@ class Collector:
         if self.use_s3:
             # Save to S3 with date-based path
             try:
-                object_key = f"raw/{metadata_format}/{date_str}/{filename}"
+                object_key = f"data/raw/{metadata_format}/{date_str}/{filename}"
                 self.s3.put_object(
                     Bucket=self.bucket,
                     Key=object_key,
