@@ -161,7 +161,7 @@ class Extractor:
         records = []
 
         # Construct S3 prefix
-        prefix = f"raw/{format_type}/{date_str}/"
+        prefix = f"data/raw/{format_type}/{date_str}/"
 
         try:
             # List objects with the prefix
